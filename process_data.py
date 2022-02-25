@@ -43,4 +43,5 @@ To Do
 Prototype development, minimal viable solution
 Wrap up into a basic ETL pipeline & implement DQ checks
 Set up quick dummy dataset & use to implement tests
+Build out readme with execution instructions
 """
