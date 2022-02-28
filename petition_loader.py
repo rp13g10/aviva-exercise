@@ -190,11 +190,17 @@ class PetitionLoader:
               primaryKey, label, abstract, numberOfSignatures
         """
 
+        # Generate requested columns
         sdf = sdf.select(
             sdf["primaryKey"].alias("petition_id"),
             ssf.size(ssf.split(sdf["label"], " ")).alias("label_length"),
             ssf.size(ssf.split(sdf["abstract"], " ")).alias("abstract_length"),
             sdf["numberOfSignatures"].alias("num_signatures"),
+        )
+
+        # Sort the output
+        sdf = sdf.orderBy(
+            sdf["num_signatures"].desc()
         )
 
         self.first_output = sdf
@@ -210,14 +216,18 @@ class PetitionLoader:
         sdf - Spark dataframe to be processed. Must contain the following columns:
               primaryKey, label"""
 
+        # Read labels into a format sparknlp can work with
         assembler = DocumentAssembler().setInputCol("label").setOutputCol("document")
 
+        # Split out into individual words
         tokenizer = Tokenizer().setInputCols(["document"]).setOutputCol("token")
 
+        # Return tokens to their root form
         lemma = (
             LemmatizerModel.pretrained().setInputCols(["token"]).setOutputCol("lemma")
         )
 
+        # Remove any stop words (the, at, I, etc...)
         remover = (
             StopWordsCleaner.pretrained()
             .setInputCols("lemma")
@@ -225,13 +235,18 @@ class PetitionLoader:
             .setCaseSensitive(False)
         )
 
+        # Tidy up the output
         finisher = Finisher().setInputCols(["cleaned"]).setOutputCols("tokens_out")
 
+        # Combine all stages into a single pipeline
         nlp_pipe = sm.Pipeline().setStages(
             [assembler, tokenizer, lemma, remover, finisher]
         )
 
+        # Run the pipeline
         sdf = nlp_pipe.fit(sdf).transform(sdf)
+
+        # Subset data, only bring through required columns
         sdf = sdf.select("primaryKey", "tokens_out")
 
         return sdf
