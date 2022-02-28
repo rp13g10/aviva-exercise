@@ -6,52 +6,24 @@ from typing import List, Union
 
 import pyspark
 import sparknlp
+import pyspark.ml as sm
 import pyspark.sql.functions as ssf
 import pyspark.sql.types as sst
 
 from pyspark.sql.session import SparkSession
 from pyspark.sql import DataFrame
 
+from sparknlp.base import DocumentAssembler, Finisher
+from sparknlp.annotator import Tokenizer, LemmatizerModel, StopWordsCleaner
 
-# sdf = sc.read.json('./data/input_data.json')
-
-# TODO - Check 1 - Ensure input schema matches expectation
-# TODO - Check 2, ensure partition IDs match in both tables
-# TODO - When saving, use input to allow creation
-#        of non-existent directories
-
-# No complex structures, unpack to tabular form
-# sdf = sdf.select(
-#     sdf['abstract._value'].alias('abstract'),
-#     sdf['label._value'].alias('label'),
-#     'numberOfSignatures'
-# )
-
-
-"""
-NOTE - Task Brief
-Use pyspark to transform the data into the desired outputs
-Include at least one test
-Keep best practices in mind
-Place code into a bitbucket/github repo
-
-
-
-
-
-To Do
-Prototype development, minimal viable solution
-Wrap up into a basic ETL pipeline & implement DQ checks
-Set up quick dummy dataset & use to implement tests
-Build out readme with execution instructions
-"""
 
 class PetitionLoader:
 
     def __init__(self, path_or_dir: Union[str, List[str]]) -> None:
         
         # Create spark context
-        self.sc = SparkSession.builder.appName('aviva').getOrCreate()
+        # self.sc = SparkSession.builder.appName('aviva').getOrCreate()
+        self.sc = sparknlp.start(spark32=True)
 
         # Define expected input schema
         self.input_schema = self._get_schema()
@@ -161,11 +133,21 @@ class PetitionLoader:
         This approach would generally be adapted based on knowledge of
         the source system.'''
 
+        # Any true duplicates are removed (matching key & signature count)
+        sdf = sdf.drop_duplicates(subset=['primaryKey', 'numberOfSignatures'])
 
+        # Partial matches are added together, perhaps the petitions are being
+        # signed on multiple websites?
+        sdf = sdf.groupby('primaryKey').agg(
+            ssf.first(sdf['label']).alias('label'),
+            ssf.first(sdf['abstract']).alias('abstract'),
+            ssf.sum(sdf['numberOfSignatures']).alias('numberOfSignatures')
+        )
+
+        return sdf
 
     def _generate_first_output(self, sdf):
-        '''Output 1
-        Create a CSV file with one row per petition
+        '''Create a CSV file with one row per petition
         Output schema
             petition_id, needs to be created
             label_length, number of words in the label field
@@ -182,6 +164,89 @@ class PetitionLoader:
         self.first_output = sdf
 
 
+    def _get_tokens(self, sdf):
+        """Take the raw text for each petition, perform some basic text processing
+        and create a 'tokens_out' field, which contains an array of tokens for each
+        record in the dataset."""
+
+        assembler = DocumentAssembler().setInputCol('label').setOutputCol('document')
+
+        tokenizer = Tokenizer().setInputCols(['document']).setOutputCol('token')
+
+        lemma = LemmatizerModel.pretrained().setInputCols(['token']).setOutputCol('lemma')
+
+        remover = StopWordsCleaner.pretrained().setInputCols(
+            'lemma'
+        ).setOutputCol(
+            'cleaned'
+        ).setCaseSensitive(
+            False
+        )
+
+        finisher = Finisher().setInputCols(['cleaned']).setOutputCols('tokens_out')
+
+        nlp_pipe = sm.Pipeline().setStages([
+            assembler,
+            tokenizer,
+            lemma,
+            remover,
+            finisher
+        ])
+
+        sdf = nlp_pipe.fit(sdf).transform(sdf)
+        sdf = sdf.select('primaryKey', 'tokens_out')
+
+        return sdf
+
+    def _explode_tokens(self, sdf, min_length=5):
+
+        # Explode out to one row per record, per token
+        sdf = sdf.select(
+            'primaryKey',
+            ssf.explode(sdf['tokens_out']).alias('token')
+        )
+
+        # Restrict to the minimum word length
+        sdf = sdf.filter(
+            ssf.length(sdf['token']) >= min_length
+        )
+
+        # Set to lower case
+        sdf = sdf.withColumn(
+            'token',
+            ssf.lower(sdf['token'])
+        )
+
+        return sdf
+
+    def _get_top_n(self, sdf, n_words=20):
+        """Take the processed tokens for each record, calculate the top 20
+        most common words in the dataset."""
+
+        # Calculate occurrences of each word in the dataset
+        counts = sdf.groupby('token').agg(
+            ssf.count(sdf['primaryKey']).alias('occurrences')
+        )
+
+        # Sort in descending order, restrict to top n_words records
+        counts = counts.orderBy(counts['occurrences'].desc()).limit(n_words)
+
+        return counts
+
+    def tokens_to_features(self, sdf):
+
+        # Get count of each token per record
+        sdf = sdf.groupby('primaryKey', 'token').agg(
+            ssf.count('token').alias('count')
+        )
+
+        # Pivot out to wide form, one row per record
+        # one column per token
+        sdf = sdf.groupby('primaryKey').pivot('token').sum('count')
+
+        return sdf
+
+
     def _generate_second_output(self, sdf):
         '''Output 2
         Create a CSV file with one row per petition
@@ -190,7 +255,46 @@ class PetitionLoader:
             1 column for each of the top 20 most common words
                 top 20 based on all  petitions
                 5 or more letters only'''
-        pass
+        
+        # Get an array of tokens for each record
+        tokens = self._get_tokens(sdf)
+
+        # Explode out to one row per record, per token
+        tokens = self._explode_tokens(tokens, min_length=5)
+
+        # Get top 20 most common tokens
+        top_n = self._get_top_n(tokens, n_words=20)
+        top_n = top_n.drop('occurrences')
+
+        # Restrict tokens to only the top 20 most common
+        tokens = tokens.join(top_n, on='token', how='inner')
+
+        # Convert to wide-form
+        features = self.tokens_to_features(tokens)
+
+        # Make sure all records are present in the output, even if they
+        # don't contain any of the top 20 words
+        all_keys = self.first_output.select(
+            'petition_id'
+        ).withColumnRenamed(
+            'petition_id', 'primaryKey'
+        )
+        features = all_keys.join(
+            features,
+            on='primaryKey',
+            how='left'
+        )
+
+        # Fill in any missing values with 0
+        to_fill = [x for x in features.columns if x != 'primaryKey']
+        features = features.fillna(0, subset=to_fill)
+
+        # Set schema as required
+        features = features.withColumnRenamed(
+            'primaryKey', 'petition_id'
+        )
+
+        self.second_output = features
 
     def load(self) -> None:
         '''Perform all required steps to load in JSON file contents as a
@@ -219,9 +323,33 @@ class PetitionLoader:
         petitions_out = self._generate_primary_key(petitions_out)
 
         # Remove Duplicates
+        petitions_out = self._remove_duplicates(petitions_out)
 
         # Generate first output
         self._generate_first_output(petitions_out)
+
+        # Generate second output
+        self._generate_second_output(petitions_out)
+
+    def save(self):
+        '''Take the two generated datasets and save them to CSV format'''
+
+        # First requested output
+        self.first_output.toPandas().to_csv(
+            './outputs/first_output.csv',
+            index=False,
+            encoding='utf8',
+            header=True
+        )
+
+        # Second requested output
+        self.second_output.toPandas().to_csv(
+            './outputs/second_output.csv',
+            index=False,
+            encoding='utf8',
+            header=True
+        )
+
 
 
 if __name__ == '__main__':
@@ -233,3 +361,6 @@ if __name__ == '__main__':
 
     # Trigger file processing
     loader.process()
+
+    # Save outputs
+    loader.save()
