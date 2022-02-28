@@ -1,4 +1,5 @@
 import os
+import sys
 from functools import reduce
 from glob import glob
 from typing import List, Union
@@ -301,6 +302,11 @@ class PetitionLoader:
         self.second_output.toPandas().to_csv(
             "./outputs/second_output.csv", index=False, encoding="utf8", header=True
         )
+    
+    def exit(self) -> None:
+        """Closes the internal spark context"""
+
+        self.sc.stop()
 
 
 if __name__ == "__main__":
@@ -315,3 +321,9 @@ if __name__ == "__main__":
 
     # Save outputs
     loader.save()
+
+    # Close spark context
+    loader.exit()
+
+    # Close the script
+    sys.exit(1)
