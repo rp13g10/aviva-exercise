@@ -6,6 +6,7 @@ from typing import List, Union
 
 import pyspark
 import sparknlp
+import pyspark.sql.functions as ssf
 import pyspark.sql.types as sst
 
 from pyspark.sql.session import SparkSession
@@ -140,6 +141,27 @@ class PetitionLoader:
 
         return sdf
 
+    def _generate_primary_key(self, sdf: DataFrame) -> DataFrame:
+        '''Generate a synthetic primary key for each record. The SHA256
+        algorithm is used in place of a random number to ensure any
+        generated keys are consistent between & during runs.'''
+
+        # Take text content of each record as a base for the primary key
+        sdf = sdf.withColumn(
+            'primary_key',
+            ssf.concat(
+                ssf.lower(sdf['abstract']),
+                ssf.lower(sdf['label'])
+            ),
+        )
+
+        # Run SHA256 hashing algorithm on the base text to generate a primary key
+        sdf = sdf.withColumn(
+            'primary_key',
+            ssf.sha2(sdf['primary_key'], 256),
+        )
+
+        return sdf
 
     def load(self) -> None:
         '''Perform all required steps to load in JSON file contents as a
@@ -158,8 +180,16 @@ class PetitionLoader:
         self.petitions_in = input_sdf
 
     def process(self):
+        '''Take the newly loaded petitions dataframe and execute the defined
+        ETL process on it.'''
 
+        # Tidy up the input schema
         petitions_out = self._flatten_data(self.petitions_in)
+
+        # Define primary keys
+        petitions_out = self._generate_primary_key(petitions_out)
+
+        return petitions_out
 
 
 if __name__ == '__main__':
@@ -168,3 +198,6 @@ if __name__ == '__main__':
 
     # Trigger file load, no ETL beyond initial read operation
     loader.load()
+
+    # Trigger file processing
+    loader.process()
