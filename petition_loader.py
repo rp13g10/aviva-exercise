@@ -35,21 +35,9 @@ Include at least one test
 Keep best practices in mind
 Place code into a bitbucket/github repo
 
-Output 1
-Create a CSV file with one row per petition
-Output schema
-    petition_id, needs to be created
-    label_length, number of words in the label field
-    abstract_length, number of words in the abstract field
-    num_signatures, number of signatures
 
-Output 2
-Create a CSV file with one row per petition
-Output schema
-    petition_id, as above
-    1 column for each of the top 20 most common words
-        top 20 based on all  petitions
-        5 or more letters only
+
+
 
 To Do
 Prototype development, minimal viable solution
@@ -70,6 +58,8 @@ class PetitionLoader:
 
         # Declare placeholders for loaded data
         self.petitions_in: DataFrame
+        self.first_output: DataFrame
+        self.second_output: DataFrame
 
         # Standardize user input
         self.paths = self._get_data_dirs(path_or_dir)
@@ -148,7 +138,7 @@ class PetitionLoader:
 
         # Take text content of each record as a base for the primary key
         sdf = sdf.withColumn(
-            'primary_key',
+            'primaryKey',
             ssf.concat(
                 ssf.lower(sdf['abstract']),
                 ssf.lower(sdf['label'])
@@ -157,11 +147,50 @@ class PetitionLoader:
 
         # Run SHA256 hashing algorithm on the base text to generate a primary key
         sdf = sdf.withColumn(
-            'primary_key',
-            ssf.sha2(sdf['primary_key'], 256),
+            'primaryKey',
+            ssf.sha2(sdf['primaryKey'], 256),
         )
 
         return sdf
+
+    def _remove_duplicates(self, sdf: DataFrame) -> DataFrame:
+        '''Ensure dataset is distinct at one row per primary key.
+        Drop any true duplicates, combine any records with the same
+        primary key but differing signature counts.
+        
+        This approach would generally be adapted based on knowledge of
+        the source system.'''
+
+
+
+    def _generate_first_output(self, sdf):
+        '''Output 1
+        Create a CSV file with one row per petition
+        Output schema
+            petition_id, needs to be created
+            label_length, number of words in the label field
+            abstract_length, number of words in the abstract field
+            num_signatures, number of signatures.'''
+        
+        sdf = sdf.select(
+            sdf['primaryKey'].alias('petition_id'),
+            ssf.size(ssf.split(sdf['label'], ' ')).alias('label_length'),
+            ssf.size(ssf.split(sdf['abstract'], ' ')).alias('abstract_length'),
+            sdf['numberOfSignatures'].alias('num_signatures')
+        )
+
+        self.first_output = sdf
+
+
+    def _generate_second_output(self, sdf):
+        '''Output 2
+        Create a CSV file with one row per petition
+        Output schema
+            petition_id, as above
+            1 column for each of the top 20 most common words
+                top 20 based on all  petitions
+                5 or more letters only'''
+        pass
 
     def load(self) -> None:
         '''Perform all required steps to load in JSON file contents as a
@@ -189,7 +218,10 @@ class PetitionLoader:
         # Define primary keys
         petitions_out = self._generate_primary_key(petitions_out)
 
-        return petitions_out
+        # Remove Duplicates
+
+        # Generate first output
+        self._generate_first_output(petitions_out)
 
 
 if __name__ == '__main__':
