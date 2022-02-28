@@ -3,14 +3,11 @@ from functools import reduce
 from glob import glob
 from typing import List, Union
 
-
-import pyspark
 import sparknlp
 import pyspark.ml as sm
 import pyspark.sql.functions as ssf
 import pyspark.sql.types as sst
 
-from pyspark.sql.session import SparkSession
 from pyspark.sql import DataFrame
 
 from sparknlp.base import DocumentAssembler, Finisher
@@ -146,8 +143,9 @@ class PetitionLoader:
 
         return sdf
 
-    def _generate_first_output(self, sdf):
-        '''Create a CSV file with one row per petition
+    def _generate_first_output(self, sdf: DataFrame) -> None:
+        '''Task:
+        Create a CSV file with one row per petition
         Output schema
             petition_id, needs to be created
             label_length, number of words in the label field
@@ -164,7 +162,7 @@ class PetitionLoader:
         self.first_output = sdf
 
 
-    def _get_tokens(self, sdf):
+    def _get_tokens(self, sdf: DataFrame) -> DataFrame:
         """Take the raw text for each petition, perform some basic text processing
         and create a 'tokens_out' field, which contains an array of tokens for each
         record in the dataset."""
@@ -198,7 +196,7 @@ class PetitionLoader:
 
         return sdf
 
-    def _explode_tokens(self, sdf, min_length=5):
+    def _explode_tokens(self, sdf: DataFrame, min_length: int=5) -> DataFrame:
 
         # Explode out to one row per record, per token
         sdf = sdf.select(
@@ -219,7 +217,7 @@ class PetitionLoader:
 
         return sdf
 
-    def _get_top_n(self, sdf, n_words=20):
+    def _get_top_n(self, sdf: DataFrame, n_words: int=20) -> DataFrame:
         """Take the processed tokens for each record, calculate the top 20
         most common words in the dataset."""
 
@@ -233,7 +231,7 @@ class PetitionLoader:
 
         return counts
 
-    def tokens_to_features(self, sdf):
+    def tokens_to_features(self, sdf: DataFrame) -> DataFrame:
 
         # Get count of each token per record
         sdf = sdf.groupby('primaryKey', 'token').agg(
@@ -247,8 +245,8 @@ class PetitionLoader:
         return sdf
 
 
-    def _generate_second_output(self, sdf):
-        '''Output 2
+    def _generate_second_output(self, sdf: DataFrame) -> DataFrame:
+        '''Task:
         Create a CSV file with one row per petition
         Output schema
             petition_id, as above
@@ -312,7 +310,7 @@ class PetitionLoader:
         # Store as class attribute
         self.petitions_in = input_sdf
 
-    def process(self):
+    def process(self) -> None:
         '''Take the newly loaded petitions dataframe and execute the defined
         ETL process on it.'''
 
@@ -331,7 +329,7 @@ class PetitionLoader:
         # Generate second output
         self._generate_second_output(petitions_out)
 
-    def save(self):
+    def save(self) -> None:
         '''Take the two generated datasets and save them to CSV format'''
 
         # First requested output
