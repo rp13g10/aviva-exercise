@@ -22,7 +22,7 @@ from sparknlp.annotator import Tokenizer, LemmatizerModel, StopWordsCleaner
 
 class PetitionLoader:
     """Handles loading, parsing & saving of petition data files.
-    
+
     Methods
     load - Reads in provided data, exposes it as petitions_in
     process - Generates output datasets, exposed as first_output, second_output
@@ -31,10 +31,9 @@ class PetitionLoader:
     execute - Sequentially calls load, process, save and exit
     """
 
-
     def __init__(self, path_or_dir: Union[str, List[str]]) -> None:
         """Create a new loader instance
-        
+
         Arguments
         path_or_dir - Either the name of a JSON file containing petition data,
                       or a directory containing multiple data files.
@@ -55,13 +54,12 @@ class PetitionLoader:
         # Standardize user input
         self.paths = self._get_data_dirs(path_or_dir)
 
-
     # File Loading #################################################################################
 
     def _get_data_dirs(self, path_or_dir: Union[str, List[str]]) -> list:
         """Determine whether user input is a path or a directory.
         If a directory is provided, find all JSON files within it.
-        
+
         Arguments
         path_or_dir - Either the name of a JSON file containing petition data,
                       or a directory containing multiple data files.
@@ -79,7 +77,7 @@ class PetitionLoader:
 
     def _read_file(self, file_dir: str) -> DataFrame:
         """Reads the contents of a single JSON file in as a spark dataframe
-        
+
         Arguments
         file_dir - The name of a JSON file containing petition data
         """
@@ -113,7 +111,7 @@ class PetitionLoader:
     def _flatten_data(self, sdf: DataFrame) -> DataFrame:
         """Unpack input spark dataframe into standard tabular format, by default
         text must be retrieved using the _value accessor.
-        
+
         Arguments
         sdf - Spark dataframe to be processed, containing data in the format defined
               by the JSON file.
@@ -127,14 +125,13 @@ class PetitionLoader:
 
         return sdf
 
-
     # First Task ###################################################################################
 
     def _generate_primary_key(self, sdf: DataFrame) -> DataFrame:
         """Generate a synthetic primary key for each record. The SHA256
         algorithm is used in place of a random number to ensure any
         generated keys are consistent between & during runs.
-        
+
         Arguments
         sdf - Spark dataframe without primary keys. Must contain both an 'abstract' and
               a 'label' column."""
@@ -160,7 +157,7 @@ class PetitionLoader:
 
         This approach would generally be adapted based on knowledge of
         the source system.
-        
+
         Arguments
         sdf - Spark dataframe to be processed. Must contain the following columns:
               primaryKey, label, abstract, numberOfSignatures
@@ -187,7 +184,7 @@ class PetitionLoader:
             label_length, number of words in the label field
             abstract_length, number of words in the abstract field
             num_signatures, number of signatures.
-            
+
         Arguments
         sdf - Spark dataframe to be processed. Must contain the following columns:
               primaryKey, label, abstract, numberOfSignatures
@@ -202,14 +199,13 @@ class PetitionLoader:
 
         self.first_output = sdf
 
-
     # Second Task ##################################################################################
 
     def _get_tokens(self, sdf: DataFrame) -> DataFrame:
         """Take the raw text for each petition, perform some basic text processing
         and create a 'tokens_out' field, which contains an array of tokens for each
         record in the dataset.
-        
+
         Arguments
         sdf - Spark dataframe to be processed. Must contain the following columns:
               primaryKey, label"""
@@ -243,7 +239,7 @@ class PetitionLoader:
     def _explode_tokens(self, sdf: DataFrame, min_length: int = 5) -> DataFrame:
         """Unpack the tokens_out column from an array of tokens per record, to one
         record for each token within each record
-        
+
         Arguments
         sdf - Spark dataframe to be processed. Must contain the following columns:
               primaryKey, tokens_out
@@ -264,7 +260,7 @@ class PetitionLoader:
     def _get_top_n(self, sdf: DataFrame, n_words: int = 20) -> DataFrame:
         """Take the processed tokens for each record, calculate the top 20
         most common words in the dataset.
-        
+
         Arguments
         sdf - Spark dataframe to be processed. Must contain the following columns:
               primaryKey, token
@@ -284,7 +280,7 @@ class PetitionLoader:
     def tokens_to_features(self, sdf: DataFrame) -> DataFrame:
         """Pivots a long dataframe (one row per record, per token) to a wide one
         (one row per record).
-        
+
         Arguments
         sdf - Spark dataframe to be processed. Must contain both the 'primaryKey' and
               'token' columns. It is strongly recommended that this method only be called
@@ -307,7 +303,7 @@ class PetitionLoader:
             1 column for each of the top 20 most common words
                 top 20 based on all  petitions
                 5 or more letters only
-                
+
         Arguments
         sdf - Spark dataframe to be processed. Must contain following columns:
               primaryKey, label"""
@@ -391,12 +387,12 @@ class PetitionLoader:
         self.second_output.toPandas().to_csv(
             "./outputs/second_output.csv", index=False, encoding="utf8", header=True
         )
-    
+
     def exit(self) -> None:
         """Closes the internal spark context"""
 
         self.sc.stop()
-    
+
     def execute(self) -> None:
         """Sequentially calls load, process, save and exit"""
         self.load()
