@@ -1,3 +1,8 @@
+"""
+Defines the PetitionLoader class. This is a helper class which uses pySpark
+and sparknlp to handle the loading, parsing & saving of petition data files.
+"""
+
 import os
 import sys
 from functools import reduce
@@ -16,7 +21,24 @@ from sparknlp.annotator import Tokenizer, LemmatizerModel, StopWordsCleaner
 
 
 class PetitionLoader:
+    """Handles loading, parsing & saving of petition data files.
+    
+    Methods
+    load - Reads in provided data, exposes it as petitions_in
+    process - Generates output datasets, exposed as first_output, second_output
+    save - Saves generated outputs to ./outputs/ in CSV format
+    exit - Closes the internal spark context
+    execute - Sequentially calls load, process, save and exit
+    """
+
+
     def __init__(self, path_or_dir: Union[str, List[str]]) -> None:
+        """Create a new loader instance
+        
+        Arguments
+        path_or_dir - Either the name of a JSON file containing petition data,
+                      or a directory containing multiple data files.
+        """
 
         # Create spark context
         # self.sc = SparkSession.builder.appName('aviva').getOrCreate()
@@ -33,9 +55,17 @@ class PetitionLoader:
         # Standardize user input
         self.paths = self._get_data_dirs(path_or_dir)
 
+
+    # File Loading #################################################################################
+
     def _get_data_dirs(self, path_or_dir: Union[str, List[str]]) -> list:
         """Determine whether user input is a path or a directory.
-        If a directory is provided, find all JSON files within it."""
+        If a directory is provided, find all JSON files within it.
+        
+        Arguments
+        path_or_dir - Either the name of a JSON file containing petition data,
+                      or a directory containing multiple data files.
+        """
 
         if os.path.isfile(path_or_dir):
             # Single file, wrap in a list for consistency of output
@@ -48,12 +78,17 @@ class PetitionLoader:
         return paths
 
     def _read_file(self, file_dir: str) -> DataFrame:
+        """Reads the contents of a single JSON file in as a spark dataframe
+        
+        Arguments
+        file_dir - The name of a JSON file containing petition data
+        """
         sdf = self.sc.read.json(file_dir, schema=self.input_schema)
         return sdf
 
     def _get_schema(self) -> sst.StructType:
-        """Check that the contents of the most recently
-        read file match the expected schema."""
+        """Retrieve the Spark Schema definition which matches the expected format for
+        any JSON files to be loaded."""
 
         # Define the expected structure of the input file
         fields = [
@@ -77,7 +112,12 @@ class PetitionLoader:
 
     def _flatten_data(self, sdf: DataFrame) -> DataFrame:
         """Unpack input spark dataframe into standard tabular format, by default
-        text must be retrieved using the _value accessor."""
+        text must be retrieved using the _value accessor.
+        
+        Arguments
+        sdf - Spark dataframe to be processed, containing data in the format defined
+              by the JSON file.
+        """
 
         sdf = sdf.select(
             sdf["abstract._value"].alias("abstract"),
@@ -87,10 +127,17 @@ class PetitionLoader:
 
         return sdf
 
+
+    # First Task ###################################################################################
+
     def _generate_primary_key(self, sdf: DataFrame) -> DataFrame:
         """Generate a synthetic primary key for each record. The SHA256
         algorithm is used in place of a random number to ensure any
-        generated keys are consistent between & during runs."""
+        generated keys are consistent between & during runs.
+        
+        Arguments
+        sdf - Spark dataframe without primary keys. Must contain both an 'abstract' and
+              a 'label' column."""
 
         # Take text content of each record as a base for the primary key
         sdf = sdf.withColumn(
@@ -112,7 +159,12 @@ class PetitionLoader:
         primary key but differing signature counts.
 
         This approach would generally be adapted based on knowledge of
-        the source system."""
+        the source system.
+        
+        Arguments
+        sdf - Spark dataframe to be processed. Must contain the following columns:
+              primaryKey, label, abstract, numberOfSignatures
+        """
 
         # Any true duplicates are removed (matching key & signature count)
         sdf = sdf.drop_duplicates(subset=["primaryKey", "numberOfSignatures"])
@@ -128,13 +180,18 @@ class PetitionLoader:
         return sdf
 
     def _generate_first_output(self, sdf: DataFrame) -> None:
-        """Task:
+        """Processor for task 1:
         Create a CSV file with one row per petition
         Output schema
             petition_id, needs to be created
             label_length, number of words in the label field
             abstract_length, number of words in the abstract field
-            num_signatures, number of signatures."""
+            num_signatures, number of signatures.
+            
+        Arguments
+        sdf - Spark dataframe to be processed. Must contain the following columns:
+              primaryKey, label, abstract, numberOfSignatures
+        """
 
         sdf = sdf.select(
             sdf["primaryKey"].alias("petition_id"),
@@ -145,10 +202,17 @@ class PetitionLoader:
 
         self.first_output = sdf
 
+
+    # Second Task ##################################################################################
+
     def _get_tokens(self, sdf: DataFrame) -> DataFrame:
         """Take the raw text for each petition, perform some basic text processing
         and create a 'tokens_out' field, which contains an array of tokens for each
-        record in the dataset."""
+        record in the dataset.
+        
+        Arguments
+        sdf - Spark dataframe to be processed. Must contain the following columns:
+              primaryKey, label"""
 
         assembler = DocumentAssembler().setInputCol("label").setOutputCol("document")
 
@@ -177,6 +241,14 @@ class PetitionLoader:
         return sdf
 
     def _explode_tokens(self, sdf: DataFrame, min_length: int = 5) -> DataFrame:
+        """Unpack the tokens_out column from an array of tokens per record, to one
+        record for each token within each record
+        
+        Arguments
+        sdf - Spark dataframe to be processed. Must contain the following columns:
+              primaryKey, tokens_out
+        min_length - The minimum word length which will be returned
+        """
 
         # Explode out to one row per record, per token
         sdf = sdf.select("primaryKey", ssf.explode(sdf["tokens_out"]).alias("token"))
@@ -191,7 +263,13 @@ class PetitionLoader:
 
     def _get_top_n(self, sdf: DataFrame, n_words: int = 20) -> DataFrame:
         """Take the processed tokens for each record, calculate the top 20
-        most common words in the dataset."""
+        most common words in the dataset.
+        
+        Arguments
+        sdf - Spark dataframe to be processed. Must contain the following columns:
+              primaryKey, token
+        n_words - The maximum number of words to be returned
+        """
 
         # Calculate occurrences of each word in the dataset
         counts = sdf.groupby("token").agg(
@@ -204,6 +282,13 @@ class PetitionLoader:
         return counts
 
     def tokens_to_features(self, sdf: DataFrame) -> DataFrame:
+        """Pivots a long dataframe (one row per record, per token) to a wide one
+        (one row per record).
+        
+        Arguments
+        sdf - Spark dataframe to be processed. Must contain both the 'primaryKey' and
+              'token' columns. It is strongly recommended that this method only be called
+              on a dataset which has been processed by the _get_top_n method."""
 
         # Get count of each token per record
         sdf = sdf.groupby("primaryKey", "token").agg(ssf.count("token").alias("count"))
@@ -215,13 +300,17 @@ class PetitionLoader:
         return sdf
 
     def _generate_second_output(self, sdf: DataFrame) -> DataFrame:
-        """Task:
+        """Processor for task 2:
         Create a CSV file with one row per petition
         Output schema
             petition_id, as above
             1 column for each of the top 20 most common words
                 top 20 based on all  petitions
-                5 or more letters only"""
+                5 or more letters only
+                
+        Arguments
+        sdf - Spark dataframe to be processed. Must contain following columns:
+              primaryKey, label"""
 
         # Get an array of tokens for each record
         tokens = self._get_tokens(sdf)
@@ -307,6 +396,13 @@ class PetitionLoader:
         """Closes the internal spark context"""
 
         self.sc.stop()
+    
+    def execute(self) -> None:
+        """Sequentially calls load, process, save and exit"""
+        self.load()
+        self.process()
+        self.save()
+        self.exit()
 
 
 if __name__ == "__main__":
